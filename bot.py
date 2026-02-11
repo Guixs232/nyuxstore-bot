@@ -9,9 +9,20 @@ import asyncio
 from datetime import datetime, timedelta
 import pytz
 
-# Pega token das variáveis de ambiente da Railway
-TOKEN = os.getenv('DISCORD_TOKEN')
-ADMIN_ID = int(os.getenv('ADMIN_ID', '1134304730835861504'))
+# Pega das variáveis de ambiente da Railway
+TOKEN = os.environ.get('DISCORD_TOKEN')
+ADMIN_ID_STR = os.environ.get('ADMIN_ID', '1134304730835861504')
+
+# Verifica se o token existe
+if not TOKEN:
+    print("❌ ERRO: DISCORD_TOKEN não encontrado!")
+    print("Verifique se a variável está configurada na Railway.")
+    exit(1)
+
+ADMIN_ID = int(ADMIN_ID_STR)
+
+print(f"✅ Token carregado: {TOKEN[:20]}...")
+print(f"✅ Admin ID: {ADMIN_ID}")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -276,6 +287,7 @@ class NyuxBot(discord.Client):
     
     async def on_ready(self):
         print(f'✅ Bot online: {self.user}')
+        print(f'✅ ID: {self.user.id}')
         await self.tree.sync()
         print('✅ Comandos sincronizados')
 
@@ -319,4 +331,6 @@ async def setup(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=PainelPublicoView())
     await interaction.response.send_message("✅ Painel enviado!", ephemeral=True)
 
+print("🚀 Iniciando bot...")
 bot.run(TOKEN)
+            
