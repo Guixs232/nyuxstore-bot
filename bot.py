@@ -6,6 +6,7 @@ import os
 import random
 import string
 import asyncio
+import re
 from datetime import datetime, timedelta
 import pytz
 
@@ -93,6 +94,13 @@ class Database:
             )
             return await cursor.fetchall()
     
+    async def get_todas_contas(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT categoria, jogo, login, senha, status FROM contas ORDER BY categoria, jogo"
+            )
+            return await cursor.fetchall()
+    
     async def marcar_conta_usada(self, conta_id, user_id):
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
@@ -143,6 +151,31 @@ class Database:
             cursor = await db.execute("SELECT valor FROM config WHERE chave = ?", (chave,))
             result = await cursor.fetchone()
             return result[0] if result else None
+    
+    async def get_estatisticas(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("SELECT COUNT(*) FROM contas WHERE status = 'disponivel'")
+            disponiveis = (await cursor.fetchone())[0]
+            
+            cursor = await db.execute("SELECT COUNT(*) FROM contas")
+            total = (await cursor.fetchone())[0]
+            
+            cursor = await db.execute("SELECT COUNT(*) FROM contas WHERE status = 'usada'")
+            usadas = (await cursor.fetchone())[0]
+            
+            cursor = await db.execute("SELECT COUNT(*) FROM keys WHERE usado_por IS NULL")
+            keys_ativas = (await cursor.fetchone())[0]
+            
+            cursor = await db.execute("SELECT COUNT(DISTINCT categoria) FROM contas")
+            categorias = (await cursor.fetchone())[0]
+            
+            return {
+                'disponiveis': disponiveis,
+                'total': total,
+                'usadas': usadas,
+                'keys_ativas': keys_ativas,
+                'categorias': categorias
+            }
 
 db = Database()
 
@@ -234,20 +267,14 @@ class PainelAdminView(View):
         if interaction.user.id != ADMIN_ID:
             return await interaction.response.send_message("❌ Sem permissão!", ephemeral=True)
         
-        async with aiosqlite.connect(db.db_path) as conn:
-            cursor = await conn.execute("SELECT COUNT(*) FROM contas WHERE status = 'disponivel'")
-            disponiveis = (await cursor.fetchone())[0]
-            
-            cursor = await conn.execute("SELECT COUNT(*) FROM contas")
-            total = (await cursor.fetchone())[0]
-            
-            cursor = await conn.execute("SELECT COUNT(*) FROM keys WHERE usado_por IS NULL")
-            keys_ativas = (await cursor.fetchone())[0]
+        stats = await db.get_estatisticas()
         
         embed = discord.Embed(title="📊 Estatísticas NyuxStore", color=discord.Color.blue())
-        embed.add_field(name="🎮 Jogos Disponíveis", value=str(disponiveis), inline=True)
-        embed.add_field(name="📊 Total de Jogos", value=str(total), inline=True)
-        embed.add_field(name="🔑 Keys Ativas", value=str(keys_ativas), inline=True)
+        embed.add_field(name="🎮 Jogos Disponíveis", value=str(stats['disponiveis']), inline=True)
+        embed.add_field(name="📊 Total de Jogos", value=str(stats['total']), inline=True)
+        embed.add_field(name="✅ Jogos Usados", value=str(stats['usadas']), inline=True)
+        embed.add_field(name="🔑 Keys Ativas", value=str(stats['keys_ativas']), inline=True)
+        embed.add_field(name="📂 Categorias", value=str(stats['categorias']), inline=True)
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -331,6 +358,199 @@ async def setup(interaction: discord.Interaction):
     await interaction.channel.send(embed=embed, view=PainelPublicoView())
     await interaction.response.send_message("✅ Painel enviado!", ephemeral=True)
 
+@bot.tree.command(name="importar", description="[ADMIN] Importa contas do arquivo .txt")
+@app_commands.describe(arquivo="Arquivo contas_steam_nyuxstore.txt")
+async def importar(interaction: discord.Interaction, arquivo: discord.Attachment):
+    if interaction.user.id != ADMIN_ID:
+        return await interaction.response.send_message("❌ Apenas dono!", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    if not arquivo.filename.endswith('.txt'):
+        return await interaction.followup.send("❌ Envie um arquivo .txt!", ephemeral=True)
+    
+    try:
+        conteudo = await arquivo.read()
+        texto = conteudo.decode('utf-8', errors='ignore')
+        
+        # Sistema inteligente de parsing
+        contas_encontradas = []
+        
+        # Divide por seções de conta (CONTA XXX)
+        secoes = re.split(r'={10,}\s*CONTA\s*\d+', texto)
+        
+        for secao in secoes:
+            if not secao.strip():
+                continue
+            
+            # Extrai nome do jogo
+            jogo = "Desconhecido"
+            categoria = "Geral"
+            
+            # Procura padrões de nome de jogo
+            padroes_jogo = [
+                r'🎮\s*Jogo:\s*(.+?)(?=\n|$)',
+                r'Jogo:\s*(.+?)(?=\n|$)',
+                r'Games?:\s*(.+?)(?=\n|$)',
+                r'🎮\s*(.+?)(?=\n|$)'
+            ]
+            
+            for padrao in padroes_jogo:
+                match = re.search(padrao, secao, re.IGNORECASE)
+                if match:
+                    jogo = match.group(1).strip()
+                    break
+            
+            # Define categoria automaticamente
+            jogo_lower = jogo.lower()
+            if any(x in jogo_lower for x in ['car', 'forza', 'speed', 'truck', 'f1', 'corrida', 'nfs', 'grid']):
+                categoria = "Corrida"
+            elif any(x in jogo_lower for x in ['call of duty', 'cod', 'cs', 'battlefield', 'war', 'tiro', 'fps', 'shooter']):
+                categoria = "FPS/Tiro"
+            elif any(x in jogo_lower for x in ['assassin', 'witcher', 'elden', 'souls', 'rpg', 'final fantasy', 'dragon']):
+                categoria = "RPG/Aventura"
+            elif any(x in jogo_lower for x in ['resident evil', 'horror', 'fear', 'terror', 'evil', 'dead']):
+                categoria = "Terror"
+            elif any(x in jogo_lower for x in ['fifa', 'pes', 'nba', 'esporte', 'football', 'soccer']):
+                categoria = "Esportes"
+            elif any(x in jogo_lower for x in ['simulator', 'simulation', 'simulator', 'tycoon', 'manager']):
+                categoria = "Simulador"
+            elif any(x in jogo_lower for x in ['lego', 'minecraft', 'cartoon']):
+                categoria = "Casual/Família"
+            else:
+                categoria = "Ação/Aventura"
+            
+            # Extrai login/senha - múltiplos formatos
+            logins_encontrados = []
+            
+            # Formato 1: Login: xxx / Senha: xxx (mesma linha ou próximas)
+            padrao1 = r'(?:Login|User|Usuário|Usuario):\s*(\S+).*?(?:Senha|Pass|Password):\s*(\S+)'
+            matches1 = re.findall(padrao1, secao, re.IGNORECASE | re.DOTALL)
+            logins_encontrados.extend(matches1)
+            
+            # Formato 2: Login em uma linha, Senha na próxima
+            linhas = secao.split('\n')
+            for i, linha in enumerate(linhas):
+                login_match = re.search(r'(?:Login|User|Usuário|Usuario):\s*(\S+)', linha, re.IGNORECASE)
+                if login_match and i + 1 < len(linhas):
+                    login = login_match.group(1)
+                    senha_match = re.search(r'(?:Senha|Pass|Password):\s*(\S+)', linhas[i + 1], re.IGNORECASE)
+                    if senha_match:
+                        logins_encontrados.append((login, senha_match.group(1)))
+            
+            # Formato 3: User: xxx / Pass: xxx
+            padrao3 = r'User:\s*(\S+).*?Pass:\s*(\S+)'
+            matches3 = re.findall(padrao3, secao, re.IGNORECASE | re.DOTALL)
+            for m in matches3:
+                if m not in logins_encontrados:
+                    logins_encontrados.append(m)
+            
+            # Adiciona contas encontradas
+            for login, senha in logins_encontrados:
+                # Limpa dados
+                login = login.strip().replace(':', '')
+                senha = senha.strip().replace(':', '')
+                
+                # Ignora se for muito curto ou exemplo
+                if len(login) > 2 and len(senha) > 2 and 'exemplo' not in login.lower():
+                    contas_encontradas.append({
+                        'jogo': jogo,
+                        'categoria': categoria,
+                        'login': login,
+                        'senha': senha
+                    })
+        
+        # Remove duplicados
+        contas_unicas = []
+        logins_vistos = set()
+        for conta in contas_encontradas:
+            chave = f"{conta['login']}:{conta['senha']}"
+            if chave not in logins_vistos:
+                logins_vistos.add(chave)
+                contas_unicas.append(conta)
+        
+        # Adiciona no banco de dados
+        adicionadas = 0
+        erros = 0
+        for conta in contas_unicas:
+            try:
+                await db.add_conta(
+                    conta['jogo'], 
+                    conta['categoria'], 
+                    conta['login'], 
+                    conta['senha']
+                )
+                adicionadas += 1
+            except Exception as e:
+                erros += 1
+                print(f"Erro: {e}")
+        
+        # Estatísticas
+        jogos_unicos = len(set([c['jogo'] for c in contas_unicas]))
+        categorias_unicas = len(set([c['categoria'] for c in contas_unicas]))
+        
+        # Cria embed de resultado
+        embed = discord.Embed(
+            title="✅ Importação Concluída!",
+            description=f"Arquivo: `{arquivo.filename}`",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        
+        embed.add_field(name="📊 Contas Adicionadas", value=str(adicionadas), inline=True)
+        embed.add_field(name="🎮 Jogos Únicos", value=str(jogos_unicas), inline=True)
+        embed.add_field(name="📂 Categorias", value=str(categorias_unicas), inline=True)
+        embed.add_field(name="❌ Erros", value=str(erros), inline=True)
+        embed.add_field(name="🔍 Total Encontrado", value=str(len(contas_unicas)), inline=True)
+        
+        # Lista categorias
+        cats = {}
+        for c in contas_unicas:
+            cats[c['categoria']] = cats.get(c['categoria'], 0) + 1
+        cats_text = "\n".join([f"• {k}: {v}" for k, v in sorted(cats.items(), key=lambda x: x[1], reverse=True)])
+        embed.add_field(name="📈 Por Categoria", value=f"```{cats_text}```", inline=False)
+        
+        embed.set_footer(text="NyuxStore - Importação automática")
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erro: {str(e)}\n\nVerifique se o arquivo está no formato correto.", ephemeral=True)
+
+@bot.tree.command(name="lista", description="[ADMIN] Mostra lista de todos os jogos")
+async def lista(interaction: discord.Interaction):
+    if interaction.user.id != ADMIN_ID:
+        return await interaction.response.send_message("❌ Apenas dono!", ephemeral=True)
+    
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    
+    contas = await db.get_todas_contas()
+    
+    if not contas:
+        return await interaction.followup.send("❌ Nenhuma conta cadastrada!", ephemeral=True)
+    
+    # Agrupa por categoria
+    categorias = {}
+    for categoria, jogo, login, senha, status in contas:
+        if categoria not in categorias:
+            categorias[categoria] = []
+        categorias[categoria].append(f"{jogo} ({status})")
+    
+    # Cria embed
+    embed = discord.Embed(
+        title="📋 Lista de Jogos Cadastrados",
+        description=f"Total: {len(contas)} contas",
+        color=discord.Color.blue()
+    )
+    
+    for cat, jogos in sorted(categorias.items()):
+        jogos_unicos = sorted(set(jogos))
+        valor = f"{len(jogos_unicos)} jogos"
+        if len(jogos_unicos) <= 5:
+            valor = ", ".join(jogos_unicos)
+        embed.add_field(name=f"📂 {cat}", value=valor, inline=True)
+    
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
 print("🚀 Iniciando bot...")
 bot.run(TOKEN)
-            
