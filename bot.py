@@ -413,7 +413,7 @@ async def importar(interaction: discord.Interaction, arquivo: discord.Attachment
                 categoria = "Terror"
             elif any(x in jogo_lower for x in ['fifa', 'pes', 'nba', 'esporte', 'football', 'soccer']):
                 categoria = "Esportes"
-            elif any(x in jogo_lower for x in ['simulator', 'simulation', 'simulator', 'tycoon', 'manager']):
+            elif any(x in jogo_lower for x in ['simulator', 'simulation', 'tycoon', 'manager']):
                 categoria = "Simulador"
             elif any(x in jogo_lower for x in ['lego', 'minecraft', 'cartoon']):
                 categoria = "Casual/Família"
@@ -485,7 +485,7 @@ async def importar(interaction: discord.Interaction, arquivo: discord.Attachment
                 erros += 1
                 print(f"Erro: {e}")
         
-        # Estatísticas
+        # Estatísticas - CORRIGIDO AQUI
         jogos_unicos = len(set([c['jogo'] for c in contas_unicas]))
         categorias_unicas = len(set([c['categoria'] for c in contas_unicas]))
         
@@ -498,7 +498,7 @@ async def importar(interaction: discord.Interaction, arquivo: discord.Attachment
         )
         
         embed.add_field(name="📊 Contas Adicionadas", value=str(adicionadas), inline=True)
-        embed.add_field(name="🎮 Jogos Únicos", value=str(jogos_unicas), inline=True)
+        embed.add_field(name="🎮 Jogos Únicos", value=str(jogos_unicos), inline=True)
         embed.add_field(name="📂 Categorias", value=str(categorias_unicas), inline=True)
         embed.add_field(name="❌ Erros", value=str(erros), inline=True)
         embed.add_field(name="🔍 Total Encontrado", value=str(len(contas_unicas)), inline=True)
